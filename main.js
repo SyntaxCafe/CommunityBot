@@ -439,3 +439,5 @@ client.on('interactionCreate', async interaction => {
 
 // Login to Discord
 client.login(process.env.BOT_TOKEN);
+
+module.exports = { client };
