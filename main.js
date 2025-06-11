@@ -1,5 +1,7 @@
+// Load environment variables from .env file
 require('dotenv').config();
 
+// Import necessary classes and methods from discord.js and node-fetch
 const {
   Client,
   GatewayIntentBits,
@@ -17,45 +19,57 @@ const {
 } = require('discord.js');
 const fetch = require('node-fetch');
 
+// Create a new Discord client instance with necessary intents and partials
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.Guilds, // For guild-related events
+    GatewayIntentBits.GuildMessages, // For message events
+    GatewayIntentBits.MessageContent, // To read message content
+    GatewayIntentBits.GuildMembers // To fetch and manage members
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction] // Enable partials for handling uncached items
 });
 
-// Configs
+// Configuration variables from .env
 const VERIFY_CHANNEL_ID = process.env.VERIFICATION_CHANNEL_ID;
 const VERIFY_ROLE_ID = process.env.ROLE_COMMUNITY_MEMBER;
 const VERIFY_LOG_CHANNEL = process.env.VERIFICATION_LOG;
 const MODERATION_ROLE_ID = process.env.ROLE_COMMUNITY_STAFF;
 const MODERATION_LOG_CHANNEL = process.env.MODERATION_LOG;
 
+// Variables to handle captcha system
 let currentMessage = null;
 let currentCaptcha = null;
 let rotationInterval = null;
 
+/**
+ * Generates a simple math captcha (adds two numbers between 1 and 9)
+ * Returns an object containing the question and its correct answer
+ */
 function generateCaptcha() {
   const num1 = Math.floor(Math.random() * 9) + 1;
   const num2 = Math.floor(Math.random() * 9) + 1;
   const result = num1 + num2;
-  if (result > 9) return generateCaptcha();
+  if (result > 9) return generateCaptcha(); // Ensure the result is a single digit
   return { question: `${num1} + ${num2}`, answer: result };
 }
 
+/**
+ * Shuffles an array (used to randomize captcha buttons)
+ */
 function shuffle(array) {
   return array.sort(() => Math.random() - 0.5);
 }
 
+/**
+ * Creates two rows of buttons for the captcha with one correct answer
+ */
 function createButtonRow(answer) {
   const buttons = [];
   for (let i = 1; i <= 9; i++) {
     buttons.push(
       new ButtonBuilder()
-        .setCustomId(`captcha_${i === answer ? 'correct' : 'wrong'}_${i}`)
+        .setCustomId(`captcha_${i === answer ? 'correct' : 'wrong'}_${i}`) // Mark correct or wrong
         .setLabel(`${i}`)
         .setStyle(ButtonStyle.Secondary)
     );
@@ -67,14 +81,20 @@ function createButtonRow(answer) {
   ];
 }
 
+/**
+ * Clears old bot messages in the verification channel
+ */
 async function clearOldMessages(channel) {
   const messages = await channel.messages.fetch({ limit: 50 });
   const botMessages = messages.filter(msg => msg.author.id === client.user.id);
   for (const msg of botMessages.values()) {
-    await msg.delete().catch(() => {});
+    await msg.delete().catch(() => { }); // Ignore errors (e.g., message already deleted)
   }
 }
 
+/**
+ * Posts a new captcha embed with buttons to the verification channel
+ */
 async function postCaptchaEmbed() {
   const channel = await client.channels.fetch(VERIFY_CHANNEL_ID);
   if (!channel) return;
@@ -98,6 +118,9 @@ async function postCaptchaEmbed() {
   scheduleCaptchaRotation();
 }
 
+/**
+ * Schedules the captcha to rotate (refresh) every 60 seconds
+ */
 function scheduleCaptchaRotation() {
   if (rotationInterval) clearInterval(rotationInterval);
   rotationInterval = setInterval(async () => {
@@ -119,13 +142,16 @@ function scheduleCaptchaRotation() {
   }, 60 * 1000);
 }
 
+/**
+ * Starts a collector to handle button interactions for captcha verification
+ */
 function startCaptchaCollector(message) {
-  const failureMap = new Map();
-  const cooldownMap = new Map();
+  const failureMap = new Map(); // Tracks wrong attempts per user
+  const cooldownMap = new Map(); // Tracks cooldown between user attempts
 
   const collector = message.createMessageComponentCollector({
     componentType: ComponentType.Button,
-    time: 30 * 60 * 1000
+    time: 30 * 60 * 1000 // Collector runs for 30 minutes
   });
 
   collector.on('collect', async interaction => {
@@ -133,15 +159,18 @@ function startCaptchaCollector(message) {
     const member = await interaction.guild.members.fetch(interaction.user.id);
     const now = Date.now();
 
+    // Cooldown: Prevent spam clicking (3 sec cooldown)
     if (cooldownMap.has(interaction.user.id) && now - cooldownMap.get(interaction.user.id) < 3000) {
       return interaction.reply({ content: '⏳ Slow down a bit before trying again.', ephemeral: true });
     }
     cooldownMap.set(interaction.user.id, now);
 
+    // Check if user is already verified
     if (member.roles.cache.has(VERIFY_ROLE_ID)) {
       return interaction.reply({ content: '✅ You are already verified!', ephemeral: true });
     }
 
+    // Handle correct captcha button click
     if (interaction.customId.startsWith('captcha_correct')) {
       await member.roles.add(VERIFY_ROLE_ID).catch(console.error);
       await interaction.reply({ content: '✅ Verified! Welcome to the community.', ephemeral: true });
@@ -151,13 +180,14 @@ function startCaptchaCollector(message) {
       if (logChannel) {
         logChannel.send(`✅ <@${interaction.user.id}> passed the captcha. Joined the server **${timeSinceJoin}** ago and took **${failureMap.get(interaction.user.id) || 0}** failed attempt(s).`);
       }
-    } else {
+    } else { // Handle incorrect captcha button click
       const fails = failureMap.get(interaction.user.id) || 0;
       const newFails = fails + 1;
       failureMap.set(interaction.user.id, newFails);
 
       await interaction.reply({ content: '❌ That’s not correct, try again!', ephemeral: true });
 
+      // Log if user fails 3+ times
       if (newFails >= 3) {
         const logChannel = await client.channels.fetch(VERIFY_LOG_CHANNEL);
         if (logChannel) {
@@ -168,6 +198,9 @@ function startCaptchaCollector(message) {
   });
 }
 
+/**
+ * Helper to get human-readable time since a user joined the server
+ */
 function getTimeSince(joinDate) {
   const now = new Date();
   let delta = Math.floor((now - joinDate) / 1000);
@@ -179,6 +212,7 @@ function getTimeSince(joinDate) {
   return `${months ? `${months} month${months > 1 ? 's' : ''}, ` : ''}${days ? `${days} day${days > 1 ? 's' : ''}, ` : ''}${hours ? `${hours} hour${hours > 1 ? 's' : ''}, ` : ''}${minutes ? `${minutes} minute${minutes > 1 ? 's' : ''}, ` : ''}${seconds} second${seconds !== 1 ? 's' : ''}`;
 }
 
+// Bot ready event
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   client.user.setActivity('syntaxcafe.app', {
@@ -187,18 +221,21 @@ client.once('ready', async () => {
   });
 
   await postCaptchaEmbed();
-  setInterval(postCaptchaEmbed, 30 * 60 * 1000);
+  setInterval(postCaptchaEmbed, 30 * 60 * 1000); // Repost captcha every 30 mins
 
-  // Slash commands registration
+  // Register slash commands
   const commands = [
+    // /status command
     new SlashCommandBuilder()
       .setName('status')
       .setDescription('Check the status of SyntaxCafe site'),
 
+    // /socials command
     new SlashCommandBuilder()
       .setName('socials')
       .setDescription('Get all official SyntaxCafe social links'),
 
+    // /ban command for moderators
     new SlashCommandBuilder()
       .setName('ban')
       .setDescription('Ban a user')
@@ -206,6 +243,7 @@ client.once('ready', async () => {
       .addStringOption(opt => opt.setName('reason').setDescription('Reason').setRequired(false))
       .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers),
 
+    // /kick command for moderators
     new SlashCommandBuilder()
       .setName('kick')
       .setDescription('Kick a user')
@@ -213,6 +251,7 @@ client.once('ready', async () => {
       .addStringOption(opt => opt.setName('reason').setDescription('Reason').setRequired(false))
       .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers),
 
+    // /timeout command for moderators
     new SlashCommandBuilder()
       .setName('timeout')
       .setDescription('Timeout a user for x minutes')
@@ -222,6 +261,7 @@ client.once('ready', async () => {
       .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
   ];
 
+  // Deploy commands to all guilds
   const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
   const guilds = client.guilds.cache.map(g => g.id);
   for (const guildId of guilds) {
@@ -231,14 +271,15 @@ client.once('ready', async () => {
   }
 });
 
+// Handle slash command execution
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, options, member, guild } = interaction;
 
+  // Handle /status command
   if (commandName === 'status') {
     await interaction.deferReply({ ephemeral: true });
-
     try {
       const response = await fetch('https://syntaxcafe.app', { method: 'GET', timeout: 5000 });
       if (!response.ok) throw new Error(`Status: ${response.status}`);
@@ -265,19 +306,23 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-
+  // Handle /socials command
   if (commandName === 'socials') {
     return interaction.reply({
       embeds: [
         new EmbedBuilder()
           .setTitle('🔗 SyntaxCafe Socials')
           .setColor('Blurple')
-          .setDescription(`Follow us and stay updated:\n\n🌐 Website: [syntaxcafe.app](https://syntaxcafe.app)\n📸 Instagram: [@syntax.cafe](https://instagram.com/)\n🐦 Twitter: [@syntaxcafe](https://twitter.com/)`)
+          .setDescription(`Follow us:\n🌐 [Website](https://syntaxcafe.app)\n📸 Instagram: [@syntax.cafe](https://instagram.com/)\n🐦 Twitter: [@syntaxcafe](https://twitter.com/)`)
           .setFooter({ text: 'Stay connected with SyntaxCafe' })
       ],
       ephemeral: true
     });
   }
+
+  // Moderation commands (/ban, /kick, /timeout) — All check for MODERATION_ROLE_ID
+  // Each of these blocks ensures only moderators can run these commands, logs the action, and DMs the user being moderated
+  // ... (These parts are self-explanatory from the logic above)
 
   if (commandName === 'ban') {
     if (!member.roles.cache.has(MODERATION_ROLE_ID)) {
@@ -292,7 +337,7 @@ client.on('interactionCreate', async interaction => {
 
     try {
       await target.send(`🔨 You have been **banned** from **${guild.name}**.\n**Reason:** ${reason}`);
-    } catch {}
+    } catch { }
 
     await targetMember.ban({ reason });
     await interaction.reply(`🔨 Banned ${target.tag} for: **${reason}**`);
@@ -328,7 +373,7 @@ client.on('interactionCreate', async interaction => {
 
     try {
       await target.send(`👢 You have been **kicked** from **${guild.name}**.\n**Reason:** ${reason}`);
-    } catch {}
+    } catch { }
 
     await targetMember.kick(reason);
     await interaction.reply(`👢 Kicked ${target.tag} for: **${reason}**`);
@@ -367,7 +412,7 @@ client.on('interactionCreate', async interaction => {
 
     try {
       await target.send(`⏳ You have been **timed out** in **${guild.name}** for **${duration} minute(s)**.\n**Reason:** ${reason}`);
-    } catch {}
+    } catch { }
 
     const ms = duration * 60 * 1000;
     await targetMember.timeout(ms, reason);
@@ -390,8 +435,7 @@ client.on('interactionCreate', async interaction => {
       logChannel.send({ embeds: [embed] });
     }
   }
-
 });
 
-
+// Login to Discord
 client.login(process.env.BOT_TOKEN);
